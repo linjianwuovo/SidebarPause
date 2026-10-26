@@ -492,6 +492,7 @@ public final class Hook implements IXposedHookLoadPackage {
                 state.armed = false;
                 state.down = false;
                 state.recycleEvent();
+                state.handler.postDelayed(() -> fadeSideGestureViews(owner), 60L);
             }
             Log.d(TAG, "skip remaining events after panel trigger, action=" + action);
             return true;
@@ -553,10 +554,14 @@ public final class Hook implements IXposedHookLoadPackage {
         }
 
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            boolean wasArmed = state.armed;
             state.cancelTimer();
             state.armed = false;
             state.down = false;
             state.recycleEvent();
+            if (wasArmed) {
+                state.handler.postDelayed(() -> fadeSideGestureViews(owner), 60L);
+            }
         }
         return false;
     }
@@ -830,6 +835,39 @@ public final class Hook implements IXposedHookLoadPackage {
     private static void invalidateSceneCache() {
         cachedSceneAt = 0L;
         cachedSceneRect = null;
+    }
+
+    private static void fadeSideGestureViews(Object detector) {
+        try {
+            Object manager = XposedHelpers.getObjectField(detector, "mSideGestureViewManager");
+            if (manager == null) {
+                return;
+            }
+            for (String field : new String[]{"navLeftView", "navRightView"}) {
+                try {
+                    Object nav = XposedHelpers.getObjectField(manager, field);
+                    if (!(nav instanceof View)) {
+                        continue;
+                    }
+                    View view = (View) nav;
+                    if (view.getVisibility() != View.VISIBLE || view.getAlpha() <= 0f) {
+                        continue;
+                    }
+                    view.animate().cancel();
+                    view.animate().alpha(0f).setDuration(200L).withEndAction(() -> {
+                        try {
+                            XposedHelpers.callMethod(view, "resetState");
+                        } catch (Throwable ignored) {
+                        }
+                        view.setAlpha(1f);
+                    });
+                } catch (Throwable ignored) {
+                }
+            }
+            Log.d(TAG, "side gesture views fading");
+        } catch (Throwable t) {
+            log("fade side gesture view failed: " + t);
+        }
     }
 
     private static void hideSideGestureView(Object detector) {
