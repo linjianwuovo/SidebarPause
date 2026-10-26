@@ -389,7 +389,41 @@ public final class Hook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("closeUserPanel hook failed: " + t);
         }
+        hookDismissFade(panel);
         log("panel close hooks installed");
+    }
+
+    /**
+     * 收起动画一开跑就开始淡出，不能等看护那一轮——OPPO 自己会在收起后 150ms
+     * 把窗口置不可见，等下去就只能看到"啪"一下没了。
+     */
+    private static void hookDismissFade(Class<?> panel) {
+        Method target = null;
+        for (Method method : panel.getDeclaredMethods()) {
+            if ("showOrDismissPanelByScale".equals(method.getName())
+                    && method.getParameterTypes().length == 5) {
+                target = method;
+                break;
+            }
+        }
+        if (target == null) {
+            log("showOrDismissPanelByScale not found");
+            return;
+        }
+        XposedBridge.hookMethod(target, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (!Boolean.FALSE.equals(param.args[0])) {
+                    return;
+                }
+                try {
+                    fadeOutClosedPanel((View) param.thisObject, "dismiss",
+                            stateName(XposedHelpers.getObjectField((View) param.thisObject, "mState")));
+                } catch (Throwable t) {
+                    log("dismiss fade failed: " + t);
+                }
+            }
+        });
     }
 
     private static String stateName(Object state) {
@@ -452,6 +486,9 @@ public final class Hook implements IXposedHookLoadPackage {
      * 所以让它在那儿淡出，收回到哪出现就从哪化掉。
      */
     private static void fadeOutClosedPanel(final View view, String why, String state) {
+        if (fadingPanel == view) {
+            return;  // 这一轮已经在淡了
+        }
         final ValueAnimator animator = ValueAnimator.ofFloat(view.getAlpha(), 0f);
         animator.setDuration(FADE_OUT_MS);
         animator.setInterpolator(new AccelerateDecelerateInterpolator());
