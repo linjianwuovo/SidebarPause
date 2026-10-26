@@ -71,6 +71,9 @@ public final class Hook implements IXposedHookLoadPackage {
     private static long switchingUntil;
     private static volatile boolean panelHiddenByUs;
     private static volatile int sourceRectGeneration;
+    private static volatile Object[] pendingAutoClose;
+    private static int autoCloseConfig;
+    private static long autoCloseConfigAt;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
@@ -336,6 +339,9 @@ public final class Hook implements IXposedHookLoadPackage {
                         } else {
                             restorePanel(view, name);
                             resetSourceRectSoon(view, name);
+                            if (name.endsWith("EDGE_PANEL_SHOWING")) {
+                                armAutoClose(view);
+                            }
                         }
                     } catch (Throwable t) {
                         log("panel state hook failed: " + t);
@@ -384,7 +390,106 @@ public final class Hook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("closeUserPanel hook failed: " + t);
         }
+        hookPanelTouch(loader);
         log("panel close hooks installed");
+    }
+
+    /** 面板被点过一下就不再自动收回。 */
+    private static void hookPanelTouch(ClassLoader loader) {
+        Class<?> handler = XposedHelpers.findClassIfExists(
+                "com.oplus.smartsidebar.panelview.edgepanel.PanelMainView$PanelMainViewTouchHandler",
+                loader);
+        if (handler == null) {
+            log("PanelMainViewTouchHandler not found");
+            return;
+        }
+        try {
+            XposedHelpers.findAndHookMethod(handler, "dispatchTouchEvent", MotionEvent.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                MotionEvent event = (MotionEvent) param.args[0];
+                                if (event != null && event.getActionMasked()
+                                        != MotionEvent.ACTION_UP) {
+                                    cancelAutoClose();
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+        } catch (Throwable t) {
+            log("panel touch hook failed: " + t);
+        }
+    }
+
+    private static void armAutoClose(View view) {
+        cancelAutoClose();
+        int ms = autoCloseMs(view);
+        if (ms <= 0) {
+            return;
+        }
+        long shownAt = 0L;
+        try {
+            shownAt = Settings.Secure.getLong(view.getContext().getContentResolver(),
+                    LAST_SHOW_KEY, 0L);
+        } catch (Throwable ignored) {
+        }
+        if (shownAt > 0L && SystemClock.uptimeMillis() - shownAt > 1500L) {
+            return;  // 不是我们呼出的（比如直接点了浮标），别抢 OPPO 的行为
+        }
+        final View target = view;
+        Runnable runnable = () -> {
+            pendingAutoClose = null;
+            try {
+                String state = stateName(XposedHelpers.getObjectField(target, "mState"));
+                if (!state.endsWith("EDGE_PANEL_SHOWING")) {
+                    return;
+                }
+                XposedHelpers.callMethod(target, "closeUserPanel", true, false);
+                log("panel auto-closed after " + ms + "ms idle");
+            } catch (Throwable t) {
+                log("panel auto close failed: " + t);
+            }
+        };
+        pendingAutoClose = new Object[]{target, runnable};
+        view.postDelayed(runnable, ms);
+    }
+
+    private static void cancelAutoClose() {
+        Object[] pending = pendingAutoClose;
+        if (pending == null) {
+            return;
+        }
+        pendingAutoClose = null;
+        try {
+            ((View) pending[0]).removeCallbacks((Runnable) pending[1]);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static int autoCloseMs(View view) {
+        long now = SystemClock.uptimeMillis();
+        if (now - autoCloseConfigAt < CONFIG_TTL_MS) {
+            return autoCloseConfig;
+        }
+        int value = 0;
+        android.database.Cursor cursor = null;
+        try {
+            cursor = view.getContext().getContentResolver().query(CONFIG_URI,
+                    new String[]{"auto_close_ms"}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                value = cursor.getInt(0);
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        autoCloseConfig = value;
+        autoCloseConfigAt = now;
+        return value;
     }
 
     private static String stateName(Object state) {
