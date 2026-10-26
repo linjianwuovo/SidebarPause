@@ -27,7 +27,7 @@
     <string name="restart_systemui">重启作用域（root）</string>
     <string name="restarting">正在重启作用域…</string>
     <string name="restart_failed">重启失败：确认已授予 root</string>
-    <string name="restart_done">已重启作用域</string>
+    <string name="restart_done">已重启 SystemUI 和侧边栏</string>
     <string name="not_found">没有找到对应页面</string>
     <string name="hold_changed">已保存</string>
 </resources>

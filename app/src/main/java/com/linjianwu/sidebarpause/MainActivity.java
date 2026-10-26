@@ -79,7 +79,8 @@ public final class MainActivity extends Activity {
         Toast.makeText(this, R.string.restarting, Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             String[] suPaths = {"su", "/system/bin/su", "/debug_ramdisk/su", "/data/adb/ksu/bin/su"};
-            String command = "pkill -9 -f com.android.systemui; pkill -9 -f com.coloros.smartsidebar";
+            String command = "pkill -9 -f '[c]om.android.systemui'; "
+                    + "pkill -9 -f '[c]om.coloros.smartsidebar'";
             boolean success = false;
             String error = "not found";
             for (String su : suPaths) {

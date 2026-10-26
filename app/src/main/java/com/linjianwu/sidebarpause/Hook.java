@@ -40,6 +40,9 @@ public final class Hook implements IXposedHookLoadPackage {
     private static final String FLOAT_BAR_SIDE_KEY = "key_float_bar_left_right";
     private static final String FLOAT_BAR_ALPHA_KEY = "edge_panel_os_float_bar_alpha";
     private static final String LAST_SHOW_KEY = "sidebarpause_last_show_at";
+    private static final String PANEL_CLOSED_KEY = "sidebarpause_panel_closed_at";
+    private static final String HANDLE_VIEW_CLASS =
+            "com.oplus.systemui.navigationbar.gesture.sidegesture.view.SideGestureNavView";
 
     private static final long CONFIG_TTL_MS = 1200L;
     private static final long SCENE_TTL_MS = 1000L;
@@ -59,6 +62,8 @@ public final class Hook implements IXposedHookLoadPackage {
     private static long hideConfigAt;
     private static Rect cachedSceneRect;
     private static long cachedSceneAt;
+    private static boolean handleSuppressed;
+    private static long handleCheckedAt;
     private static long lastPanelShownAt;
     private static int lastPanelSide = -1;
     private static volatile boolean switching;
@@ -140,6 +145,8 @@ public final class Hook implements IXposedHookLoadPackage {
             log("back callback class not found");
         }
 
+        hookSideGestureView(loadPackageParam.classLoader);
+
         XposedHelpers.findAndHookMethod(detector, "cancelGesture",
                 MotionEvent.class, Boolean.class, Boolean.class, new XC_MethodHook() {
                     @Override
@@ -171,6 +178,50 @@ public final class Hook implements IXposedHookLoadPackage {
         }
         State state = STATES.get(owner);
         return state != null && state.down && state.armed && state.enabled && !state.triggered;
+    }
+
+    private static void hookSideGestureView(ClassLoader loader) {
+        Class<?> viewClass = XposedHelpers.findClassIfExists(HANDLE_VIEW_CLASS, loader);
+        if (viewClass == null) {
+            log("SideGestureNavView not found");
+            return;
+        }
+        XposedHelpers.findAndHookMethod(viewClass, "onDraw", Canvas.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            View view = (View) param.thisObject;
+                            if (suppressSideHandle(view.getContext())) {
+                                param.setResult(null);
+                            }
+                        } catch (Throwable t) {
+                            log("side handle draw hook failed: " + t);
+                        }
+                    }
+                });
+        log("side handle hooks installed");
+    }
+
+    private static boolean suppressSideHandle(Context context) {
+        long now = SystemClock.uptimeMillis();
+        if (now - handleCheckedAt < 250L) {
+            return handleSuppressed;
+        }
+        long shownAt = 0L;
+        long closedAt = 0L;
+        try {
+            shownAt = Settings.Secure.getLong(context.getContentResolver(),
+                    LAST_SHOW_KEY, 0L);
+            closedAt = Settings.Secure.getLong(context.getContentResolver(),
+                    PANEL_CLOSED_KEY, 0L);
+        } catch (Throwable ignored) {
+        }
+        boolean open = shownAt > closedAt && now - shownAt < 120000L;
+        boolean justClosed = closedAt > 0L && now - closedAt < 1500L;
+        handleSuppressed = open || justClosed;
+        handleCheckedAt = now;
+        return handleSuppressed;
     }
 
     private static void hookSidebarBar(ClassLoader loader) {
@@ -344,6 +395,7 @@ public final class Hook implements IXposedHookLoadPackage {
     }
 
     private static void startHideWatch(View view, String why) {
+        markPanelClosed(view.getContext());
         final long start = SystemClock.uptimeMillis();
         final Runnable[] tick = new Runnable[1];
         tick[0] = () -> {
@@ -703,6 +755,15 @@ public final class Hook implements IXposedHookLoadPackage {
         }
     }
 
+    private static void markPanelClosed(Context context) {
+        try {
+            Settings.Secure.putLong(context.getContentResolver(), PANEL_CLOSED_KEY,
+                    SystemClock.uptimeMillis());
+        } catch (Throwable t) {
+            log("mark panel closed failed: " + t);
+        }
+    }
+
     private static void applyBarHidden(Context context, Config config) {
         try {
             int alpha = config.hideBar ? 0 : 40;
@@ -779,6 +840,15 @@ public final class Hook implements IXposedHookLoadPackage {
             }
             XposedHelpers.callMethod(manager, "onUpEvent", 0);
             XposedHelpers.callMethod(manager, "onUpEvent", 1);
+            for (String field : new String[]{"navLeftView", "navRightView"}) {
+                try {
+                    Object nav = XposedHelpers.getObjectField(manager, field);
+                    if (nav != null) {
+                        XposedHelpers.callMethod(nav, "resetState");
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
             Log.d(TAG, "side gesture views dismissed");
         } catch (Throwable t) {
             log("hide side gesture view failed: " + t);
