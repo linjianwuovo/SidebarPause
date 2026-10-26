@@ -35,6 +35,8 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public final class Hook implements IXposedHookLoadPackage {
     private static final String TAG = "SidebarPause";
+    /** 正式版关掉逐事件日志；出问题时改成 true 再抓 logcat。 */
+    private static final boolean DEBUG = false;
     private static final String SYSTEM_UI = "com.android.systemui";
     private static final String DETECTOR_CLASS =
             "com.oplus.systemui.navigationbar.gesture.sidegesture.SideGestureDetector";
@@ -74,7 +76,7 @@ public final class Hook implements IXposedHookLoadPackage {
     private static volatile boolean switching;
     private static long switchingUntil;
     private static volatile boolean panelHiddenByUs;
-    private static final long FADE_OUT_MS = 320L;
+    private static final long FADE_OUT_MS = 300L;
     private static volatile View fadingPanel;
     private static volatile ValueAnimator closedFade;
 
@@ -162,7 +164,9 @@ public final class Hook implements IXposedHookLoadPackage {
                             if (shouldKeepBack(param.thisObject,
                                     (MotionEvent) param.args[0], param.args[1], param.args[2])) {
                                 param.setResult(null);
+                                if (DEBUG) {
                                 Log.d(TAG, "native long-press cancel skipped; back kept");
+                                }
                             }
                         } catch (Throwable t) {
                             log("cancelGesture hook failed: " + t);
@@ -592,7 +596,9 @@ public final class Hook implements IXposedHookLoadPackage {
                 state.down = false;
                 state.recycleEvent();
             }
+            if (DEBUG) {
             Log.d(TAG, "skip remaining events after panel trigger, action=" + action);
+            }
             return true;
         }
 
@@ -618,9 +624,11 @@ public final class Hook implements IXposedHookLoadPackage {
 
             Config config = config(context);
             markSystemUiLoaded(context);
+            if (DEBUG) {
             Log.d(TAG, "down x=" + (int) state.downX + " y=" + (int) state.downY
                     + " side=" + (state.isLeft ? "L" : "R") + " hold=" + config.holdMs
                     + " hide=" + config.hideBar);
+            }
             applyBarHidden(context, config);
             state.holdMs = config.holdMs;
             state.hideBar = config.hideBar;
@@ -690,7 +698,9 @@ public final class Hook implements IXposedHookLoadPackage {
         if (!state.armed) {
             state.armed = true;
             state.cancelTimer();
+            if (DEBUG) {
             Log.d(TAG, "armed inward=" + (int) inward);
+            }
         }
         if (state.armed && state.timer == null) {
             scheduleTrigger(owner, state, event, context);
@@ -759,7 +769,9 @@ public final class Hook implements IXposedHookLoadPackage {
         }
 
         if (switching && now < switchingUntil) {
+            if (DEBUG) {
             Log.d(TAG, "side switch already in progress; trigger ignored");
+            }
             state.recycleEvent();
             return;
         }
@@ -993,7 +1005,9 @@ public final class Hook implements IXposedHookLoadPackage {
                 } catch (Throwable ignored) {
                 }
             }
+            if (DEBUG) {
             Log.d(TAG, "side gesture views dismissed");
+            }
         } catch (Throwable t) {
             log("hide side gesture view failed: " + t);
         }

@@ -26,8 +26,6 @@
     <string name="setup_note">浮标由侧边栏进程隐藏，只勾系统界面不会生效。模块只改触发方式，不替换 OPPO 的侧边栏内容。</string>
 
     <string name="open_lsposed">打开 LSPosed</string>
-    <string name="dump_windows">抓取窗口（root）</string>
-    <string name="dumping_windows">正在抓取…</string>
     <string name="restart_systemui">重启作用域（root）</string>
     <string name="restarting">正在重启作用域…</string>
     <string name="restart_failed">重启失败：确认已授予 root</string>

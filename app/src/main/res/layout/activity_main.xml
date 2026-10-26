@@ -240,29 +240,5 @@
             android:textColor="@color/accent_text"
             android:textSize="15sp" />
 
-        <Button
-            android:id="@+id/dump_windows"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="18dp"
-            android:background="@drawable/button_secondary"
-            android:fontFamily="sans-serif-medium"
-            android:text="@string/dump_windows"
-            android:textAllCaps="false"
-            android:textColor="@color/text_primary"
-            android:textSize="15sp" />
-
-        <TextView
-            android:id="@+id/window_dump"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:background="@drawable/card_bg"
-            android:fontFamily="monospace"
-            android:padding="12dp"
-            android:textColor="@color/text_secondary"
-            android:textIsSelectable="true"
-            android:textSize="9sp"
-            android:visibility="gone" />
     </LinearLayout>
 </ScrollView>

@@ -12,8 +12,6 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.util.concurrent.TimeUnit;
 
 public final class MainActivity extends Activity {
@@ -24,7 +22,6 @@ public final class MainActivity extends Activity {
     private SharedPreferences prefs;
     private TextView holdValue;
     private TextView hookStatus;
-    private TextView windowDump;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -77,10 +74,6 @@ public final class MainActivity extends Activity {
 
         Button openLsposed = findViewById(R.id.open_lsposed);
         openLsposed.setOnClickListener(v -> openLsposed());
-
-        windowDump = findViewById(R.id.window_dump);
-        Button dump = findViewById(R.id.dump_windows);
-        dump.setOnClickListener(v -> dumpWindows());
     }
 
     private void updateHoldLabel(int value) {
@@ -146,54 +139,6 @@ public final class MainActivity extends Activity {
                     Toast.LENGTH_SHORT).show());
             android.util.Log.i("SidebarPause", "restart scope ok=" + ok + " err=" + lastError);
         }).start();
-    }
-
-    private void dumpWindows() {
-        Toast.makeText(this, R.string.dumping_windows, Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            String command = "dumpsys window windows"
-                    + " | grep -E 'Window #|mViewVisibility=0x0|mHasSurface=true|Frames:'"
-                    + " | head -220";
-            String fallback = "dumpsys window windows | grep -E 'Window #|Frames:' | head -220";
-            String output = runSu(command);
-            if (output == null || output.trim().isEmpty()) {
-                output = runSu(fallback);
-            }
-            final String result = output == null || output.trim().isEmpty()
-                    ? "抓取失败：确认已授予 root" : output;
-            runOnUiThread(() -> {
-                windowDump.setVisibility(android.view.View.VISIBLE);
-                windowDump.setText(result);
-            });
-        }).start();
-    }
-
-    private String runSu(String command) {
-        String[] suPaths = {"su", "/system/bin/su", "/debug_ramdisk/su", "/data/adb/ksu/bin/su"};
-        for (String su : suPaths) {
-            try {
-                Process process = new ProcessBuilder(su, "-c", command)
-                        .redirectErrorStream(true)
-                        .start();
-                StringBuilder output = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(process.getInputStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        output.append(line).append('\n');
-                    }
-                }
-                if (!process.waitFor(10, TimeUnit.SECONDS)) {
-                    process.destroy();
-                    continue;
-                }
-                if (output.length() > 0 || process.exitValue() == 0) {
-                    return output.toString();
-                }
-            } catch (Throwable ignored) {
-            }
-        }
-        return null;
     }
 
     private void openLsposed() {
