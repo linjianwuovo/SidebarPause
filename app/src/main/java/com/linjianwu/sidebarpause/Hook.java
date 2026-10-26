@@ -62,8 +62,6 @@ public final class Hook implements IXposedHookLoadPackage {
     private static long hideConfigAt;
     private static Rect cachedSceneRect;
     private static long cachedSceneAt;
-    private static boolean handleSuppressed;
-    private static long handleCheckedAt;
     private static long lastPanelShownAt;
     private static int lastPanelSide = -1;
     private static volatile boolean switching;
@@ -204,24 +202,10 @@ public final class Hook implements IXposedHookLoadPackage {
     }
 
     private static boolean suppressSideHandle(Context context) {
-        long now = SystemClock.uptimeMillis();
-        if (now - handleCheckedAt < 250L) {
-            return handleSuppressed;
+        if (context == null) {
+            return false;
         }
-        long shownAt = 0L;
-        long closedAt = 0L;
-        try {
-            shownAt = Settings.Secure.getLong(context.getContentResolver(),
-                    LAST_SHOW_KEY, 0L);
-            closedAt = Settings.Secure.getLong(context.getContentResolver(),
-                    PANEL_CLOSED_KEY, 0L);
-        } catch (Throwable ignored) {
-        }
-        boolean open = shownAt > closedAt && now - shownAt < 120000L;
-        boolean justClosed = closedAt > 0L && now - closedAt < 1500L;
-        handleSuppressed = open || justClosed;
-        handleCheckedAt = now;
-        return handleSuppressed;
+        return config(context).hideBar;
     }
 
     private static void hookSidebarBar(ClassLoader loader) {
