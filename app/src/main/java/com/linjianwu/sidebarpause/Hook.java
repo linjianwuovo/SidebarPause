@@ -69,6 +69,7 @@ public final class Hook implements IXposedHookLoadPackage {
     private static int lastPanelSide = -1;
     private static volatile boolean switching;
     private static long switchingUntil;
+    private static volatile boolean panelHiddenByUs;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
@@ -331,6 +332,8 @@ public final class Hook implements IXposedHookLoadPackage {
                                 + " alpha=" + view.getAlpha());
                         if (name.endsWith("FLOAT_BAR_SHOWING")) {
                             startHideWatch(view, "float-bar-state");
+                        } else {
+                            restorePanel(view, name);
                         }
                     } catch (Throwable t) {
                         log("panel state hook failed: " + t);
@@ -434,9 +437,27 @@ public final class Hook implements IXposedHookLoadPackage {
             String state = stateName(XposedHelpers.getObjectField(view, "mState"));
             view.setAlpha(0f);
             view.setVisibility(View.INVISIBLE);
+            panelHiddenByUs = true;
             log("closed panel hidden (" + why + ") state=" + state);
         } catch (Throwable t) {
             log("closed panel hide failed (" + why + "): " + t);
+        }
+    }
+
+    /** 面板重新打开时，把我们自己藏掉的容器还原，避免打开后面板不可见。 */
+    private static void restorePanel(View view, String state) {
+        if (!panelHiddenByUs) {
+            return;
+        }
+        try {
+            if (view.getVisibility() != View.VISIBLE || view.getAlpha() < 1f) {
+                view.setVisibility(View.VISIBLE);
+                view.setAlpha(1f);
+                log("panel restored for state=" + state);
+            }
+            panelHiddenByUs = false;
+        } catch (Throwable t) {
+            log("panel restore failed: " + t);
         }
     }
 
@@ -629,6 +650,7 @@ public final class Hook implements IXposedHookLoadPackage {
 
         cancelSystemBack(owner, event);
         hideSideGestureView(owner);
+        scheduleGestureViewHides(owner, state, state.generation);
         haptic(context);
 
         final int desired = state.isLeft ? 1 : 0;
@@ -849,6 +871,27 @@ public final class Hook implements IXposedHookLoadPackage {
     private static void invalidateSceneCache() {
         cachedSceneAt = 0L;
         cachedSceneRect = null;
+    }
+
+    /**
+     * 手势被我们接管后，SystemUI 的 mAllowGesture 已经是 false，松手时它自己会跳过
+     * onUpEvent()，返回手势的那块灰色贝塞尔形状就留在屏幕上。多补几次，直到这轮手势结束。
+     */
+    private static void scheduleGestureViewHides(Object owner, State state, int generation) {
+        Handler handler = state.handler != null ? state.handler : handlerOf(owner);
+        long[] delays = {150L, 400L, 900L, 1600L};
+        for (final long delay : delays) {
+            handler.postDelayed(() -> {
+                try {
+                    if (state.generation != generation || !state.triggered) {
+                        return;
+                    }
+                    hideSideGestureView(owner);
+                } catch (Throwable t) {
+                    log("delayed gesture view hide failed: " + t);
+                }
+            }, delay);
+        }
     }
 
     private static void hideSideGestureView(Object detector) {
