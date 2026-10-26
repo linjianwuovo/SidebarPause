@@ -134,19 +134,17 @@ final class PanelBridge {
     private static void send(IBinder target, Rect rect, float velocityX, boolean show) {
         Bundle bundle = new Bundle();
         // 侧边栏把 showRect 当成"面板形变的起点"（PanelMainView.updateFloatBarRect ->
-        // sourceRect）：面板收起后会缩成这个矩形并一直留在屏幕上。传自定义矩形就是那根
-        // 灰长条的来源。空矩形让侧边栏回退到它自己计算的浮标位置，收起后不留任何东西。
-        bundle.putParcelable("showRect", new Rect());
-        bundle.putFloat("cornerRadius", 0f);
+        // sourceRect）：面板从这里长出来，收起时也缩回这里。传手指位置的矩形就是
+        // "在手的位置弹出"；代价是收起后会留一块灰条，所以面板开到位之后由
+        // Hook.resetSourceRectSoon 把它改回侧边栏自己算的浮标矩形，灰条就不留了。
+        bundle.putParcelable("showRect", rect == null ? new Rect() : new Rect(rect));
+        bundle.putFloat("cornerRadius", 24f * Math.max(1f, pendingDensity));
         bundle.putInt("backgroundColor", 0);
         bundle.putInt("strokeColor", 0);
         bundle.putFloat("strokeWidth", 0f);
         bundle.putFloat("velocityX", velocityX);
         bundle.putBoolean("showState", show);
         bundle.putLong("gestureIconDismissTime", 400L);
-        if (rect != null) {
-            Log.d(TAG, "anchor ignored for morph, was " + rect);
-        }
 
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();

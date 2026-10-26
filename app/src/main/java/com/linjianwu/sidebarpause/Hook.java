@@ -70,6 +70,7 @@ public final class Hook implements IXposedHookLoadPackage {
     private static volatile boolean switching;
     private static long switchingUntil;
     private static volatile boolean panelHiddenByUs;
+    private static volatile int sourceRectGeneration;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
@@ -334,6 +335,7 @@ public final class Hook implements IXposedHookLoadPackage {
                             startHideWatch(view, "float-bar-state");
                         } else {
                             restorePanel(view, name);
+                            resetSourceRectSoon(view, name);
                         }
                     } catch (Throwable t) {
                         log("panel state hook failed: " + t);
@@ -424,6 +426,28 @@ public final class Hook implements IXposedHookLoadPackage {
             }
         };
         view.postDelayed(tick[0], 350L);
+    }
+
+    /** 面板开到位后，把形变起点还给侧边栏自己算的浮标矩形，这样收起时不会留下灰长条。 */
+    private static void resetSourceRectSoon(View view, String state) {
+        final int generation = ++sourceRectGeneration;
+        view.postDelayed(() -> {
+            try {
+                if (generation != sourceRectGeneration) {
+                    return;
+                }
+                String now = stateName(XposedHelpers.getObjectField(view, "mState"));
+                if (now.endsWith("FLOAT_BAR_SHOWING")) {
+                    return;
+                }
+                Method method = view.getClass().getMethod("updateFloatBarRect",
+                        Rect.class, Integer.class, Float.class, Integer.class, Float.class);
+                method.invoke(view, new Rect(), null, null, null, null);
+                log("morph source rect reset to float bar (opened as " + state + ")");
+            } catch (Throwable t) {
+                log("morph source rect reset failed: " + t);
+            }
+        }, 900L);
     }
 
     private static void hideClosedPanel(View view, String why) {
