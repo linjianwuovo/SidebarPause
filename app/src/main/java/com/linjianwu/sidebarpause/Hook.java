@@ -44,8 +44,6 @@ public final class Hook implements IXposedHookLoadPackage {
     private static final String PANEL_CLOSED_KEY = "sidebarpause_panel_closed_at";
     private static final String SYSTEMUI_LOADED_KEY = "sidebarpause_systemui_loaded";
     private static final String SIDEBAR_LOADED_KEY = "sidebarpause_sidebar_loaded";
-    private static final String HANDLE_VIEW_CLASS =
-            "com.oplus.systemui.navigationbar.gesture.sidegesture.view.SideGestureNavView";
 
     private static final long CONFIG_TTL_MS = 1200L;
     private static final long SCENE_TTL_MS = 1000L;
@@ -148,8 +146,6 @@ public final class Hook implements IXposedHookLoadPackage {
             log("back callback class not found");
         }
 
-        hookSideGestureView(loadPackageParam.classLoader);
-
         XposedHelpers.findAndHookMethod(detector, "cancelGesture",
                 MotionEvent.class, Boolean.class, Boolean.class, new XC_MethodHook() {
                     @Override
@@ -181,29 +177,6 @@ public final class Hook implements IXposedHookLoadPackage {
         }
         State state = STATES.get(owner);
         return state != null && state.down && state.armed && state.enabled && !state.triggered;
-    }
-
-    private static void hookSideGestureView(ClassLoader loader) {
-        Class<?> viewClass = XposedHelpers.findClassIfExists(HANDLE_VIEW_CLASS, loader);
-        if (viewClass == null) {
-            log("SideGestureNavView not found");
-            return;
-        }
-        XposedHelpers.findAndHookMethod(viewClass, "onDraw", Canvas.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        try {
-                            View view = (View) param.thisObject;
-                            if (config(view.getContext()).hideBar) {
-                                param.setResult(null);
-                            }
-                        } catch (Throwable t) {
-                            log("side handle draw hook failed: " + t);
-                        }
-                    }
-                });
-        log("side handle hooks installed");
     }
 
     private static void hookSidebarBar(ClassLoader loader) {
@@ -515,7 +488,6 @@ public final class Hook implements IXposedHookLoadPackage {
                 state.armed = false;
                 state.down = false;
                 state.recycleEvent();
-                state.handler.postDelayed(() -> fadeSideGestureViews(owner), 60L);
             }
             Log.d(TAG, "skip remaining events after panel trigger, action=" + action);
             return true;
@@ -578,14 +550,10 @@ public final class Hook implements IXposedHookLoadPackage {
         }
 
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-            boolean wasArmed = state.armed;
             state.cancelTimer();
             state.armed = false;
             state.down = false;
             state.recycleEvent();
-            if (wasArmed) {
-                state.handler.postDelayed(() -> fadeSideGestureViews(owner), 60L);
-            }
         }
         return false;
     }
@@ -881,39 +849,6 @@ public final class Hook implements IXposedHookLoadPackage {
     private static void invalidateSceneCache() {
         cachedSceneAt = 0L;
         cachedSceneRect = null;
-    }
-
-    private static void fadeSideGestureViews(Object detector) {
-        try {
-            Object manager = XposedHelpers.getObjectField(detector, "mSideGestureViewManager");
-            if (manager == null) {
-                return;
-            }
-            for (String field : new String[]{"navLeftView", "navRightView"}) {
-                try {
-                    Object nav = XposedHelpers.getObjectField(manager, field);
-                    if (!(nav instanceof View)) {
-                        continue;
-                    }
-                    View view = (View) nav;
-                    if (view.getVisibility() != View.VISIBLE || view.getAlpha() <= 0f) {
-                        continue;
-                    }
-                    view.animate().cancel();
-                    view.animate().alpha(0f).setDuration(200L).withEndAction(() -> {
-                        try {
-                            XposedHelpers.callMethod(view, "resetState");
-                        } catch (Throwable ignored) {
-                        }
-                        view.setAlpha(1f);
-                    });
-                } catch (Throwable ignored) {
-                }
-            }
-            Log.d(TAG, "side gesture views fading");
-        } catch (Throwable t) {
-            log("fade side gesture view failed: " + t);
-        }
     }
 
     private static void hideSideGestureView(Object detector) {
