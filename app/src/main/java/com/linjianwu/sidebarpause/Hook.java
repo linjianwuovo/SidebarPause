@@ -403,19 +403,15 @@ public final class Hook implements IXposedHookLoadPackage {
                 if (!hideFloatBar(view)) {
                     return;
                 }
-                long shownAt = 0L;
-                try {
-                    shownAt = Settings.Secure.getLong(view.getContext().getContentResolver(),
-                            LAST_SHOW_KEY, 0L);
-                } catch (Throwable ignored) {
-                }
-                long sinceShow = SystemClock.uptimeMillis() - shownAt;
-                if (shownAt > 0L && sinceShow < 1200L) {
-                    log("panel hide watch stopped, panel shown " + sinceShow + "ms ago ("
-                            + why + ")");
+                String state = stateName(XposedHelpers.getObjectField(view, "mState"));
+                if (!state.endsWith("FLOAT_BAR_SHOWING")) {
+                    // 面板又打开了（或者还在打开中），这一轮跳过，别停掉整个看护
+                    if (SystemClock.uptimeMillis() - start < 2200L) {
+                        view.postDelayed(tick[0], 120L);
+                    }
                     return;
                 }
-                hideClosedPanel(view, why);
+                hideClosedPanel(view, why + "/" + state);
                 if (SystemClock.uptimeMillis() - start < 2200L) {
                     view.postDelayed(tick[0], 120L);
                 } else {
@@ -425,7 +421,7 @@ public final class Hook implements IXposedHookLoadPackage {
                 log("panel hide watch failed (" + why + "): " + t);
             }
         };
-        view.postDelayed(tick[0], 350L);
+        view.postDelayed(tick[0], 120L);
     }
 
     /** 面板开到位后，把形变起点还给侧边栏自己算的浮标矩形，这样收起时不会留下灰长条。 */
