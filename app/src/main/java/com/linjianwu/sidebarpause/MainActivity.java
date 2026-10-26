@@ -23,7 +23,6 @@ public final class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private TextView holdValue;
-    private TextView autoCloseValue;
     private TextView hookStatus;
     private TextView windowDump;
 
@@ -73,30 +72,6 @@ public final class MainActivity extends Activity {
         hideBar.setOnCheckedChangeListener((buttonView, isChecked) ->
                 prefs.edit().putBoolean(Prefs.KEY_HIDE, isChecked).apply());
 
-        autoCloseValue = findViewById(R.id.auto_close_value);
-        SeekBar autoClose = findViewById(R.id.auto_close);
-        autoClose.setMax(Prefs.AUTO_CLOSE_MAX_STEPS);
-        autoClose.setProgress(Prefs.autoCloseProgress(Prefs.autoCloseMs(this)));
-        updateAutoCloseLabel(Prefs.autoCloseMs(this));
-        autoClose.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                int value = Prefs.autoCloseFromProgress(progress);
-                updateAutoCloseLabel(value);
-                if (fromUser) {
-                    prefs.edit().putInt(Prefs.KEY_AUTO_CLOSE, value).apply();
-                }
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {
-            }
-        });
-
         Button restart = findViewById(R.id.restart_systemui);
         restart.setOnClickListener(v -> restartSystemUi());
 
@@ -110,12 +85,6 @@ public final class MainActivity extends Activity {
 
     private void updateHoldLabel(int value) {
         holdValue.setText(getString(R.string.hold_value, value));
-    }
-
-    private void updateAutoCloseLabel(int ms) {
-        autoCloseValue.setText(ms <= 0
-                ? getString(R.string.auto_close_value_off)
-                : getString(R.string.auto_close_value, ms / 1000f));
     }
 
     @Override

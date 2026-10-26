@@ -10,10 +10,6 @@
     <string name="hold_desc">边缘内滑后停住这么久就呼出侧边栏。快滑不受影响。</string>
     <string name="hold_value">%1$d ms</string>
 
-    <string name="auto_close_title">无操作自动收回</string>
-    <string name="auto_close_desc">呼出后没去点它，到时间自己缩回；点过一下就不再自动收。最左档是不自动收。</string>
-    <string name="auto_close_value_off">不自动收</string>
-    <string name="auto_close_value">%1$.1f 秒</string>
 
     <string name="edge_title">触发边缘</string>
 

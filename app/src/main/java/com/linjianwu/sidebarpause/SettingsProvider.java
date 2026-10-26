@@ -35,13 +35,12 @@ public final class SettingsProvider extends ContentProvider {
             return null;
         }
         MatrixCursor cursor = new MatrixCursor(
-                new String[]{"hold_ms", "left", "right", "hide_bar", "auto_close_ms"}, 1);
+                new String[]{"hold_ms", "left", "right", "hide_bar"}, 1);
         cursor.addRow(new Object[]{
                 Prefs.hold(context),
                 Prefs.left(context) ? 1 : 0,
                 Prefs.right(context) ? 1 : 0,
-                Prefs.hide(context) ? 1 : 0,
-                Prefs.autoCloseMs(context)
+                Prefs.hide(context) ? 1 : 0
         });
         cursor.setNotificationUri(context.getContentResolver(), uri);
         return cursor;

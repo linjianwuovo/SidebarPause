@@ -70,10 +70,6 @@ public final class Hook implements IXposedHookLoadPackage {
     private static volatile boolean switching;
     private static long switchingUntil;
     private static volatile boolean panelHiddenByUs;
-    private static volatile int sourceRectGeneration;
-    private static volatile Object[] pendingAutoClose;
-    private static int autoCloseConfig;
-    private static long autoCloseConfigAt;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
@@ -338,10 +334,6 @@ public final class Hook implements IXposedHookLoadPackage {
                             startHideWatch(view, "float-bar-state");
                         } else {
                             restorePanel(view, name);
-                            resetSourceRectSoon(view, name);
-                            if (name.endsWith("EDGE_PANEL_SHOWING")) {
-                                armAutoClose(view);
-                            }
                         }
                     } catch (Throwable t) {
                         log("panel state hook failed: " + t);
@@ -390,106 +382,48 @@ public final class Hook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("closeUserPanel hook failed: " + t);
         }
-        hookPanelTouch(loader);
+        hookPanelDismiss(panel);
         log("panel close hooks installed");
     }
 
-    /** 面板被点过一下就不再自动收回。 */
-    private static void hookPanelTouch(ClassLoader loader) {
-        Class<?> handler = XposedHelpers.findClassIfExists(
-                "com.oplus.smartsidebar.panelview.edgepanel.PanelMainView$PanelMainViewTouchHandler",
-                loader);
-        if (handler == null) {
-            log("PanelMainViewTouchHandler not found");
+    /**
+     * 收起前把形变起点换回侧边栏自己算的浮标矩形。showRect 既决定面板从哪长出来，
+     * 也决定它收回成什么形状，不收的话面板会缩成起手那块 72x1200 的灰长条。
+     */
+    private static void hookPanelDismiss(Class<?> panel) {
+        Method target = null;
+        for (Method method : panel.getDeclaredMethods()) {
+            if ("showOrDismissPanelByScale".equals(method.getName())
+                    && method.getParameterTypes().length == 5) {
+                target = method;
+                break;
+            }
+        }
+        if (target == null) {
+            log("showOrDismissPanelByScale not found");
             return;
         }
-        try {
-            XposedHelpers.findAndHookMethod(handler, "dispatchTouchEvent", MotionEvent.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            try {
-                                MotionEvent event = (MotionEvent) param.args[0];
-                                if (event != null && event.getActionMasked()
-                                        != MotionEvent.ACTION_UP) {
-                                    cancelAutoClose();
-                                }
-                            } catch (Throwable ignored) {
-                            }
-                        }
-                    });
-        } catch (Throwable t) {
-            log("panel touch hook failed: " + t);
-        }
-    }
-
-    private static void armAutoClose(View view) {
-        cancelAutoClose();
-        int ms = autoCloseMs(view);
-        if (ms <= 0) {
-            return;
-        }
-        long shownAt = 0L;
-        try {
-            shownAt = Settings.Secure.getLong(view.getContext().getContentResolver(),
-                    LAST_SHOW_KEY, 0L);
-        } catch (Throwable ignored) {
-        }
-        if (shownAt > 0L && SystemClock.uptimeMillis() - shownAt > 1500L) {
-            return;  // 不是我们呼出的（比如直接点了浮标），别抢 OPPO 的行为
-        }
-        final View target = view;
-        Runnable runnable = () -> {
-            pendingAutoClose = null;
-            try {
-                String state = stateName(XposedHelpers.getObjectField(target, "mState"));
-                if (!state.endsWith("EDGE_PANEL_SHOWING")) {
-                    return;
+        final Class<?> panelClass = panel;
+        XposedBridge.hookMethod(target, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (!Boolean.FALSE.equals(param.args[0])) {
+                    return;  // 只在收起时改，打开仍用起手矩形拿到跟手效果
                 }
-                XposedHelpers.callMethod(target, "closeUserPanel", true, false);
-                log("panel auto-closed after " + ms + "ms idle");
-            } catch (Throwable t) {
-                log("panel auto close failed: " + t);
+                try {
+                    View view = (View) param.thisObject;
+                    if (!hideFloatBar(view)) {
+                        return;
+                    }
+                    Method update = panelClass.getMethod("updateFloatBarRect",
+                            Rect.class, Integer.class, Float.class, Integer.class, Float.class);
+                    update.invoke(view, new Rect(), null, null, null, null);
+                    log("morph source reset before dismiss");
+                } catch (Throwable t) {
+                    log("morph reset on dismiss failed: " + t);
+                }
             }
-        };
-        pendingAutoClose = new Object[]{target, runnable};
-        view.postDelayed(runnable, ms);
-    }
-
-    private static void cancelAutoClose() {
-        Object[] pending = pendingAutoClose;
-        if (pending == null) {
-            return;
-        }
-        pendingAutoClose = null;
-        try {
-            ((View) pending[0]).removeCallbacks((Runnable) pending[1]);
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private static int autoCloseMs(View view) {
-        long now = SystemClock.uptimeMillis();
-        if (now - autoCloseConfigAt < CONFIG_TTL_MS) {
-            return autoCloseConfig;
-        }
-        int value = 0;
-        android.database.Cursor cursor = null;
-        try {
-            cursor = view.getContext().getContentResolver().query(CONFIG_URI,
-                    new String[]{"auto_close_ms"}, null, null, null);
-            if (cursor != null && cursor.moveToFirst()) {
-                value = cursor.getInt(0);
-            }
-        } catch (Throwable ignored) {
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-        }
-        autoCloseConfig = value;
-        autoCloseConfigAt = now;
-        return value;
+        });
     }
 
     private static String stateName(Object state) {
@@ -526,29 +460,7 @@ public final class Hook implements IXposedHookLoadPackage {
                 log("panel hide watch failed (" + why + "): " + t);
             }
         };
-        view.postDelayed(tick[0], 120L);
-    }
-
-    /** 面板开到位后，把形变起点还给侧边栏自己算的浮标矩形，这样收起时不会留下灰长条。 */
-    private static void resetSourceRectSoon(View view, String state) {
-        final int generation = ++sourceRectGeneration;
-        view.postDelayed(() -> {
-            try {
-                if (generation != sourceRectGeneration) {
-                    return;
-                }
-                String now = stateName(XposedHelpers.getObjectField(view, "mState"));
-                if (now.endsWith("FLOAT_BAR_SHOWING")) {
-                    return;
-                }
-                Method method = view.getClass().getMethod("updateFloatBarRect",
-                        Rect.class, Integer.class, Float.class, Integer.class, Float.class);
-                method.invoke(view, new Rect(), null, null, null, null);
-                log("morph source rect reset to float bar (opened as " + state + ")");
-            } catch (Throwable t) {
-                log("morph source rect reset failed: " + t);
-            }
-        }, 900L);
+        view.postDelayed(tick[0], 450L);
     }
 
     private static void hideClosedPanel(View view, String why) {
