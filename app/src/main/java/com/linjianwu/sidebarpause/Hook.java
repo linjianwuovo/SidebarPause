@@ -2,6 +2,7 @@ package com.linjianwu.sidebarpause;
 
 import android.content.Context;
 import android.database.Cursor;
+import android.graphics.Canvas;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.net.Uri;
@@ -219,6 +220,47 @@ public final class Hook implements IXposedHookLoadPackage {
                         }
                     }
                 });
+        Class<?> barView = XposedHelpers.findClassIfExists(
+                "com.oplus.smartsidebar.permanent.floatbar.FloatBarView", loader);
+        if (barView != null) {
+            try {
+                XposedHelpers.findAndHookMethod(barView, "onDraw", Canvas.class,
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                try {
+                                    if (hideFloatBar((View) param.thisObject)) {
+                                        param.setResult(null);
+                                    }
+                                } catch (Throwable t) {
+                                    log("float bar draw hook failed: " + t);
+                                }
+                            }
+                        });
+            } catch (Throwable t) {
+                log("float bar onDraw method not found: " + t);
+            }
+            try {
+                XposedHelpers.findAndHookMethod(barView, "updateFloatBarAlpha",
+                        boolean.class, float.class, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                try {
+                                    if (hideFloatBar((View) param.thisObject)) {
+                                        param.args[0] = Boolean.TRUE;
+                                        param.args[1] = 0f;
+                                    }
+                                } catch (Throwable t) {
+                                    log("float bar alpha2 hook failed: " + t);
+                                }
+                            }
+                        });
+            } catch (Throwable t) {
+                log("float bar alpha2 method not found: " + t);
+            }
+        } else {
+            log("FloatBarView not found");
+        }
         log("float bar hooks installed");
     }
 
@@ -242,7 +284,7 @@ public final class Hook implements IXposedHookLoadPackage {
                                 + " h=" + view.getHeight() + " vis=" + view.getVisibility()
                                 + " alpha=" + view.getAlpha());
                         if (name.endsWith("FLOAT_BAR_SHOWING")) {
-                            view.postDelayed(() -> hideClosedPanel(view, "float-bar-state"), 80L);
+                            startHideWatch(view, "float-bar-state");
                         }
                     } catch (Throwable t) {
                         log("panel state hook failed: " + t);
@@ -261,8 +303,7 @@ public final class Hook implements IXposedHookLoadPackage {
                                 View view = (View) param.args[0];
                                 log("panel invisible task state="
                                         + stateName(XposedHelpers.getObjectField(view, "mState")));
-                                view.postDelayed(
-                                        () -> hideClosedPanel(view, "invisible-task"), 260L);
+                                startHideWatch(view, "invisible-task");
                             } catch (Throwable t) {
                                 log("panel invisible task hook failed: " + t);
                             }
@@ -282,8 +323,7 @@ public final class Hook implements IXposedHookLoadPackage {
                                 log("closeUserPanel result=" + closed + " state="
                                         + stateName(XposedHelpers.getObjectField(view, "mState")));
                                 if (closed) {
-                                    view.postDelayed(
-                                            () -> hideClosedPanel(view, "close-user-panel"), 430L);
+                                    startHideWatch(view, "close-user-panel");
                                 }
                             } catch (Throwable t) {
                                 log("closeUserPanel hook failed: " + t);
@@ -303,21 +343,45 @@ public final class Hook implements IXposedHookLoadPackage {
         return String.valueOf(state);
     }
 
+    private static void startHideWatch(View view, String why) {
+        final long start = SystemClock.uptimeMillis();
+        final Runnable[] tick = new Runnable[1];
+        tick[0] = () -> {
+            try {
+                if (!hideFloatBar(view)) {
+                    return;
+                }
+                long shownAt = 0L;
+                try {
+                    shownAt = Settings.Secure.getLong(view.getContext().getContentResolver(),
+                            LAST_SHOW_KEY, 0L);
+                } catch (Throwable ignored) {
+                }
+                long sinceShow = SystemClock.uptimeMillis() - shownAt;
+                if (shownAt > 0L && sinceShow < 1200L) {
+                    log("panel hide watch stopped, panel shown " + sinceShow + "ms ago ("
+                            + why + ")");
+                    return;
+                }
+                hideClosedPanel(view, why);
+                if (SystemClock.uptimeMillis() - start < 2200L) {
+                    view.postDelayed(tick[0], 120L);
+                } else {
+                    log("panel hide watch finished (" + why + ")");
+                }
+            } catch (Throwable t) {
+                log("panel hide watch failed (" + why + "): " + t);
+            }
+        };
+        view.postDelayed(tick[0], 350L);
+    }
+
     private static void hideClosedPanel(View view, String why) {
         try {
             if (!hideFloatBar(view)) {
-                log("panel hide skipped, hide_bar off (" + why + ")");
                 return;
             }
-            long shownAt = 0L;
-            try {
-                shownAt = Settings.Secure.getLong(view.getContext().getContentResolver(),
-                        LAST_SHOW_KEY, 0L);
-            } catch (Throwable ignored) {
-            }
-            long sinceShow = SystemClock.uptimeMillis() - shownAt;
-            if (shownAt > 0L && sinceShow < 1500L) {
-                log("panel hide skipped, panel just shown " + sinceShow + "ms ago (" + why + ")");
+            if (view.getVisibility() == View.INVISIBLE && view.getAlpha() == 0f) {
                 return;
             }
             String state = stateName(XposedHelpers.getObjectField(view, "mState"));
