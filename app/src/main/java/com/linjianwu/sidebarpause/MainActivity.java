@@ -152,10 +152,9 @@ public final class MainActivity extends Activity {
         Toast.makeText(this, R.string.dumping_windows, Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             String command = "dumpsys window windows"
-                    + " | grep -E -A30 'Window #.*(Float|Edge|Gesture|Navigation)'"
-                    + " | grep -E 'Window #|Frames:|mViewVisibility|mHasSurface'"
-                    + " | head -80";
-            String fallback = "dumpsys window windows | grep -E 'Window #|Frames:' | head -120";
+                    + " | grep -E 'Window #|mViewVisibility=0x0|mHasSurface=true|Frames:'"
+                    + " | head -220";
+            String fallback = "dumpsys window windows | grep -E 'Window #|Frames:' | head -220";
             String output = runSu(command);
             if (output == null || output.trim().isEmpty()) {
                 output = runSu(fallback);
