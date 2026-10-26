@@ -17,11 +17,11 @@
     <string name="hide_bar">隐藏全局侧边栏（浮标）</string>
 
     <string name="setup_title">启用</string>
-    <string name="setup_scope">作用域：系统界面（com.android.systemui）</string>
-    <string name="setup_step1">1. 在 LSPosed 中启用本模块，作用域勾选「系统界面」。</string>
+    <string name="setup_scope">作用域：系统界面 + OPPO 侧边栏</string>
+    <string name="setup_step1">1. 在 LSPosed 中启用本模块，作用域同时勾选「系统界面」和「OPPO 侧边栏」。</string>
     <string name="setup_step2">2. 启用后点下面的「重启作用域」，或重启手机。</string>
     <string name="setup_step3">3. 从屏幕边缘内滑，停住即出侧边栏；直接滑走仍是返回。</string>
-    <string name="setup_note">模块只改触发方式，不替换 OPPO 的侧边栏内容。</string>
+    <string name="setup_note">浮标由侧边栏进程隐藏，只勾系统界面不会生效。模块只改触发方式，不替换 OPPO 的侧边栏内容。</string>
 
     <string name="open_lsposed">打开 LSPosed</string>
     <string name="restart_systemui">重启作用域（root）</string>

@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.SeekBar;
@@ -15,9 +16,12 @@ import java.util.concurrent.TimeUnit;
 
 public final class MainActivity extends Activity {
     private static final String LSPOSED_PACKAGE = "org.lsposed.manager";
+    private static final String SYSTEMUI_LOADED_KEY = "sidebarpause_systemui_loaded";
+    private static final String SIDEBAR_LOADED_KEY = "sidebarpause_sidebar_loaded";
 
     private SharedPreferences prefs;
     private TextView holdValue;
+    private TextView hookStatus;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -26,6 +30,7 @@ public final class MainActivity extends Activity {
         prefs = Prefs.get(this);
 
         holdValue = findViewById(R.id.hold_value);
+        hookStatus = findViewById(R.id.hook_status);
         SeekBar hold = findViewById(R.id.hold);
         hold.setMax(Prefs.MAX_HOLD - Prefs.MIN_HOLD);
         hold.setProgress(Prefs.hold(this) - Prefs.MIN_HOLD);
@@ -73,6 +78,31 @@ public final class MainActivity extends Activity {
 
     private void updateHoldLabel(int value) {
         holdValue.setText(getString(R.string.hold_value, value));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateHookStatus();
+    }
+
+    private void updateHookStatus() {
+        int systemUi = 0;
+        int sidebar = 0;
+        try {
+            systemUi = Settings.Secure.getInt(getContentResolver(), SYSTEMUI_LOADED_KEY, 0);
+            sidebar = Settings.Secure.getInt(getContentResolver(), SIDEBAR_LOADED_KEY, 0);
+        } catch (Throwable ignored) {
+        }
+        String text;
+        if (systemUi == 0 && sidebar == 0) {
+            text = "当前加载：系统界面 ✗ / 侧边栏 ✗（模块可能没启用或没重启作用域）";
+        } else if (sidebar == 0) {
+            text = "当前加载：系统界面 ✓ / 侧边栏 ✗（去 LSPosed 勾选「OPPO 侧边栏」）";
+        } else {
+            text = "当前加载：系统界面 ✓ / 侧边栏 ✓";
+        }
+        hookStatus.setText(text);
     }
 
     private void restartSystemUi() {

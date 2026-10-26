@@ -42,6 +42,8 @@ public final class Hook implements IXposedHookLoadPackage {
     private static final String FLOAT_BAR_ALPHA_KEY = "edge_panel_os_float_bar_alpha";
     private static final String LAST_SHOW_KEY = "sidebarpause_last_show_at";
     private static final String PANEL_CLOSED_KEY = "sidebarpause_panel_closed_at";
+    private static final String SYSTEMUI_LOADED_KEY = "sidebarpause_systemui_loaded";
+    private static final String SIDEBAR_LOADED_KEY = "sidebarpause_sidebar_loaded";
 
     private static final long CONFIG_TTL_MS = 1200L;
     private static final long SCENE_TTL_MS = 1000L;
@@ -61,6 +63,8 @@ public final class Hook implements IXposedHookLoadPackage {
     private static long hideConfigAt;
     private static Rect cachedSceneRect;
     private static long cachedSceneAt;
+    private static boolean systemUiLoadedMarked;
+    private static boolean sidebarLoadedMarked;
     private static long lastPanelShownAt;
     private static int lastPanelSide = -1;
     private static volatile boolean switching;
@@ -443,6 +447,7 @@ public final class Hook implements IXposedHookLoadPackage {
         }
         boolean hide = true;
         android.database.Cursor cursor = null;
+        markSidebarLoaded(view.getContext());
         try {
             cursor = view.getContext().getContentResolver().query(CONFIG_URI,
                     new String[]{"hide_bar"}, null, null, null);
@@ -510,6 +515,7 @@ public final class Hook implements IXposedHookLoadPackage {
             state.isLeft = state.downX < state.screenW / 2f;
 
             Config config = config(context);
+            markSystemUiLoaded(context);
             Log.d(TAG, "down x=" + (int) state.downX + " y=" + (int) state.downY
                     + " side=" + (state.isLeft ? "L" : "R") + " hold=" + config.holdMs
                     + " hide=" + config.hideBar);
@@ -748,6 +754,28 @@ public final class Hook implements IXposedHookLoadPackage {
                     SystemClock.uptimeMillis());
         } catch (Throwable t) {
             log("mark panel shown failed: " + t);
+        }
+    }
+
+    private static void markSystemUiLoaded(Context context) {
+        if (systemUiLoadedMarked) {
+            return;
+        }
+        systemUiLoadedMarked = true;
+        try {
+            Settings.Secure.putInt(context.getContentResolver(), SYSTEMUI_LOADED_KEY, 1);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void markSidebarLoaded(Context context) {
+        if (sidebarLoadedMarked) {
+            return;
+        }
+        sidebarLoadedMarked = true;
+        try {
+            Settings.Secure.putInt(context.getContentResolver(), SIDEBAR_LOADED_KEY, 1);
+        } catch (Throwable ignored) {
         }
     }
 
