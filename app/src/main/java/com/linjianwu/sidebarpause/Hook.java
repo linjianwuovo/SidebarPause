@@ -1,0 +1,890 @@
+package com.linjianwu.sidebarpause;
+
+import android.content.Context;
+import android.database.Cursor;
+import android.graphics.Point;
+import android.graphics.Rect;
+import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.provider.Settings;
+import android.util.Log;
+import android.view.MotionEvent;
+import android.view.View;
+
+import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
+
+import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.XposedHelpers;
+import de.robv.android.xposed.callbacks.XC_LoadPackage;
+
+public final class Hook implements IXposedHookLoadPackage {
+    private static final String TAG = "SidebarPause";
+    private static final String SYSTEM_UI = "com.android.systemui";
+    private static final String DETECTOR_CLASS =
+            "com.oplus.systemui.navigationbar.gesture.sidegesture.SideGestureDetector";
+    private static final String CALLBACK_CLASS = DETECTOR_CLASS + "$3";
+    private static final Uri CONFIG_URI =
+            Uri.parse("content://com.linjianwu.sidebarpause.settings/settings");
+    private static final String SCENE_REGION_KEY = "sidebar_scene_region";
+    private static final String FLOAT_BAR_SIDE_KEY = "key_float_bar_left_right";
+    private static final String FLOAT_BAR_ALPHA_KEY = "edge_panel_os_float_bar_alpha";
+    private static final String LAST_SHOW_KEY = "sidebarpause_last_show_at";
+
+    private static final long CONFIG_TTL_MS = 1200L;
+    private static final long SCENE_TTL_MS = 1000L;
+    private static final long SIDE_SWITCH_SCENE_TIMEOUT = 1200L;
+    private static final long PANEL_OPEN_WINDOW_MS = 8000L;
+
+    private static final Map<Object, State> STATES =
+            Collections.synchronizedMap(new WeakHashMap<>());
+    private static final Set<Object> SUPPRESSED =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+    private static final Map<Class<?>, Method> CANCEL_METHODS =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
+    private static Config cachedConfig = new Config();
+    private static long cachedConfigAt;
+    private static boolean hideConfig = true;
+    private static long hideConfigAt;
+    private static Rect cachedSceneRect;
+    private static long cachedSceneAt;
+    private static long lastPanelShownAt;
+    private static int lastPanelSide = -1;
+    private static volatile boolean switching;
+    private static long switchingUntil;
+
+    @Override
+    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
+        if ("com.coloros.smartsidebar".equals(loadPackageParam.packageName)) {
+            Log.i(TAG, "module loaded in smartsidebar " + loadPackageParam.processName);
+            hookSidebarBar(loadPackageParam.classLoader);
+            hookPanelClose(loadPackageParam.classLoader);
+            return;
+        }
+        if (!SYSTEM_UI.equals(loadPackageParam.packageName)) {
+            return;
+        }
+        Log.i(TAG, "module loaded in " + loadPackageParam.processName);
+        Class<?> detector = XposedHelpers.findClassIfExists(
+                DETECTOR_CLASS, loadPackageParam.classLoader);
+        if (detector == null) {
+            log("detector class not found");
+            return;
+        }
+
+        Log.i(TAG, "detector found, hooking");
+        log("hooking " + DETECTOR_CLASS);
+        XposedHelpers.findAndHookMethod(detector, "onMotionEventImpl",
+                MotionEvent.class, Map.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            MotionEvent event = (MotionEvent) param.args[0];
+                            if (onMotionEvent(param.thisObject, event)) {
+                                param.setResult(null);
+                            }
+                        } catch (Throwable t) {
+                            log("event hook failed: " + t);
+                        }
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            MotionEvent event = (MotionEvent) param.args[0];
+                            int action = event.getActionMasked();
+                            if (action == MotionEvent.ACTION_UP
+                                    || action == MotionEvent.ACTION_CANCEL) {
+                                Object owner = param.thisObject;
+                                SUPPRESSED.remove(owner);
+                                State state = STATES.get(owner);
+                                if (state != null) {
+                                    state.finishGesture();
+                                }
+                            }
+                        } catch (Throwable t) {
+                            log("post hook failed: " + t);
+                        }
+                    }
+                });
+
+        Class<?> callback = XposedHelpers.findClassIfExists(
+                CALLBACK_CLASS, loadPackageParam.classLoader);
+        if (callback != null) {
+            XposedHelpers.findAndHookMethod(callback, "triggerBack", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    try {
+                        Object owner = XposedHelpers.getObjectField(param.thisObject, "this$0");
+                        if (owner != null && SUPPRESSED.contains(owner)) {
+                            param.setResult(null);
+                            log("back suppressed");
+                        }
+                    } catch (Throwable t) {
+                        log("triggerBack hook failed: " + t);
+                    }
+                }
+            });
+        } else {
+            log("back callback class not found");
+        }
+
+        XposedHelpers.findAndHookMethod(detector, "cancelGesture",
+                MotionEvent.class, Boolean.class, Boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            if (shouldKeepBack(param.thisObject,
+                                    (MotionEvent) param.args[0], param.args[1], param.args[2])) {
+                                param.setResult(null);
+                                Log.d(TAG, "native long-press cancel skipped; back kept");
+                            }
+                        } catch (Throwable t) {
+                            log("cancelGesture hook failed: " + t);
+                        }
+                    }
+                });
+    }
+
+    private static boolean shouldKeepBack(Object owner, MotionEvent event,
+                                          Object flag1, Object flag2) {
+        if (!Boolean.FALSE.equals(flag1) || !Boolean.TRUE.equals(flag2)) {
+            return false;
+        }
+        if (event == null || event.getActionMasked() != MotionEvent.ACTION_MOVE
+                || event.getPointerCount() != 1) {
+            return false;
+        }
+        if (SUPPRESSED.contains(owner)) {
+            return false;
+        }
+        State state = STATES.get(owner);
+        return state != null && state.down && state.armed && state.enabled && !state.triggered;
+    }
+
+    private static void hookSidebarBar(ClassLoader loader) {
+        Class<?> cls = XposedHelpers.findClassIfExists(
+                "com.oplus.smartsidebar.permanent.floatbar.FloatBarMainView", loader);
+        if (cls == null) {
+            log("FloatBarMainView not found");
+            return;
+        }
+        XposedHelpers.findAndHookMethod(cls, "updateFloatBarVisibility",
+                boolean.class, boolean.class, boolean.class, int.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            if (hideFloatBar((android.view.View) param.thisObject)) {
+                                param.args[0] = Boolean.FALSE;
+                            }
+                        } catch (Throwable t) {
+                            log("float bar visibility hook failed: " + t);
+                        }
+                    }
+                });
+        XposedHelpers.findAndHookMethod(cls, "updateFloatBarAlpha",
+                float.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            if (hideFloatBar((android.view.View) param.thisObject)) {
+                                param.args[0] = 0f;
+                            }
+                        } catch (Throwable t) {
+                            log("float bar alpha hook failed: " + t);
+                        }
+                    }
+                });
+        XposedHelpers.findAndHookMethod(cls, "addFloatBarMainViewIfNeeded",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            android.view.View view = (android.view.View) param.thisObject;
+                            if (hideFloatBar(view)) {
+                                view.setAlpha(0f);
+                            }
+                        } catch (Throwable t) {
+                            log("float bar add hook failed: " + t);
+                        }
+                    }
+                });
+        log("float bar hooks installed");
+    }
+
+    private static void hookPanelClose(ClassLoader loader) {
+        Class<?> panel = XposedHelpers.findClassIfExists(
+                "com.oplus.smartsidebar.panelview.edgepanel.PanelMainView", loader);
+        if (panel == null) {
+            log("PanelMainView not found");
+            return;
+        }
+        Class<?> state = XposedHelpers.findClassIfExists(
+                "com.oplus.smartsidebar.panelview.edgepanel.PanelMainView$State", loader);
+        if (state != null) {
+            XposedHelpers.findAndHookMethod(panel, "changeState", state, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        View view = (View) param.thisObject;
+                        String name = stateName(param.args[0]);
+                        log("panel state -> " + name + " w=" + view.getWidth()
+                                + " h=" + view.getHeight() + " vis=" + view.getVisibility()
+                                + " alpha=" + view.getAlpha());
+                        if (name.endsWith("FLOAT_BAR_SHOWING")) {
+                            view.postDelayed(() -> hideClosedPanel(view, "float-bar-state"), 80L);
+                        }
+                    } catch (Throwable t) {
+                        log("panel state hook failed: " + t);
+                    }
+                }
+            });
+        } else {
+            log("PanelMainView state class not found");
+        }
+        try {
+            XposedHelpers.findAndHookMethod(panel, "panelInvisibleDelayTask$lambda$3",
+                    panel, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                View view = (View) param.args[0];
+                                log("panel invisible task state="
+                                        + stateName(XposedHelpers.getObjectField(view, "mState")));
+                                view.postDelayed(
+                                        () -> hideClosedPanel(view, "invisible-task"), 260L);
+                            } catch (Throwable t) {
+                                log("panel invisible task hook failed: " + t);
+                            }
+                        }
+                    });
+        } catch (Throwable t) {
+            log("panel invisible task method not found: " + t);
+        }
+        try {
+            XposedHelpers.findAndHookMethod(panel, "closeUserPanel",
+                    boolean.class, boolean.class, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                View view = (View) param.thisObject;
+                                boolean closed = Boolean.TRUE.equals(param.getResult());
+                                log("closeUserPanel result=" + closed + " state="
+                                        + stateName(XposedHelpers.getObjectField(view, "mState")));
+                                if (closed) {
+                                    view.postDelayed(
+                                            () -> hideClosedPanel(view, "close-user-panel"), 430L);
+                                }
+                            } catch (Throwable t) {
+                                log("closeUserPanel hook failed: " + t);
+                            }
+                        }
+                    });
+        } catch (Throwable t) {
+            log("closeUserPanel hook failed: " + t);
+        }
+        log("panel close hooks installed");
+    }
+
+    private static String stateName(Object state) {
+        if (state instanceof Enum) {
+            return ((Enum<?>) state).name();
+        }
+        return String.valueOf(state);
+    }
+
+    private static void hideClosedPanel(View view, String why) {
+        try {
+            if (!hideFloatBar(view)) {
+                log("panel hide skipped, hide_bar off (" + why + ")");
+                return;
+            }
+            long shownAt = 0L;
+            try {
+                shownAt = Settings.Secure.getLong(view.getContext().getContentResolver(),
+                        LAST_SHOW_KEY, 0L);
+            } catch (Throwable ignored) {
+            }
+            long sinceShow = SystemClock.uptimeMillis() - shownAt;
+            if (shownAt > 0L && sinceShow < 1500L) {
+                log("panel hide skipped, panel just shown " + sinceShow + "ms ago (" + why + ")");
+                return;
+            }
+            String state = stateName(XposedHelpers.getObjectField(view, "mState"));
+            view.setAlpha(0f);
+            view.setVisibility(View.INVISIBLE);
+            log("closed panel hidden (" + why + ") state=" + state);
+        } catch (Throwable t) {
+            log("closed panel hide failed (" + why + "): " + t);
+        }
+    }
+
+    private static boolean hideFloatBar(android.view.View view) {
+        long now = SystemClock.uptimeMillis();
+        if (now - hideConfigAt < CONFIG_TTL_MS) {
+            return hideConfig;
+        }
+        boolean hide = true;
+        android.database.Cursor cursor = null;
+        try {
+            cursor = view.getContext().getContentResolver().query(CONFIG_URI,
+                    new String[]{"hide_bar"}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                hide = cursor.getInt(0) != 0;
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        hideConfig = hide;
+        hideConfigAt = now;
+        return hide;
+    }
+
+    private static boolean onMotionEvent(Object owner, MotionEvent event) {
+        if (owner == null || event == null) {
+            return false;
+        }
+        Context context = contextOf(owner);
+        if (context == null) {
+            return false;
+        }
+
+        int action = event.getActionMasked();
+        State state = STATES.get(owner);
+        if (state == null) {
+            state = new State();
+            STATES.put(owner, state);
+        }
+
+        if (state.triggered && action != MotionEvent.ACTION_DOWN) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                hideSideGestureView(owner);
+                state.cancelTimer();
+                state.armed = false;
+                state.down = false;
+                state.recycleEvent();
+            }
+            Log.d(TAG, "skip remaining events after panel trigger, action=" + action);
+            return true;
+        }
+
+        if (action == MotionEvent.ACTION_DOWN) {
+            state.cancelTimer();
+            state.recycleEvent();
+            SUPPRESSED.remove(owner);
+            state.generation++;
+            state.handler = handlerOf(owner);
+            state.down = true;
+            state.armed = false;
+            state.triggered = false;
+            state.downX = event.getRawX();
+            state.downY = event.getRawY();
+            state.lastX = state.downX;
+            state.lastY = state.downY;
+            state.downAt = event.getDownTime();
+            state.lastMoveAt = SystemClock.uptimeMillis();
+            state.velocityX = 0f;
+            state.screenW = displaySize(owner, context).x;
+            state.screenH = displaySize(owner, context).y;
+            state.isLeft = state.downX < state.screenW / 2f;
+
+            Config config = config(context);
+            Log.d(TAG, "down x=" + (int) state.downX + " y=" + (int) state.downY
+                    + " side=" + (state.isLeft ? "L" : "R") + " hold=" + config.holdMs
+                    + " hide=" + config.hideBar);
+            applyBarHidden(context, config);
+            state.holdMs = config.holdMs;
+            state.hideBar = config.hideBar;
+            state.enabled = state.isLeft ? config.left : config.right;
+            if (state.enabled && !config.hideBar) {
+                Rect tab = sceneRect(context);
+                if (tab != null && tab.contains((int) state.downX, (int) state.downY)) {
+                    state.enabled = false;
+                }
+            }
+            return false;
+        }
+
+        if (action == MotionEvent.ACTION_POINTER_DOWN) {
+            state.enabled = false;
+            state.cancelTimer();
+            return false;
+        }
+
+        if (!state.down) {
+            return false;
+        }
+
+        if (action == MotionEvent.ACTION_MOVE) {
+            if (!state.enabled) {
+                return false;
+            }
+            trackMove(owner, state, event, context);
+            return false;
+        }
+
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            state.cancelTimer();
+            state.armed = false;
+            state.down = false;
+            state.recycleEvent();
+        }
+        return false;
+    }
+
+    private static void trackMove(Object owner, State state, MotionEvent event, Context context) {
+        float x = event.getRawX();
+        float y = event.getRawY();
+        float inward = state.isLeft ? x - state.downX : state.downX - x;
+        float dx = Math.abs(x - state.downX);
+        float dy = Math.abs(y - state.downY);
+        float minInward = dp(context, 14f);
+        float maxInward = Math.min(state.screenW * 0.30f, dp(context, 220f));
+
+        if (inward < minInward || inward > maxInward
+                || dy > dx * 0.8f + dp(context, 10f)) {
+            state.armed = false;
+            state.cancelTimer();
+            state.lastX = x;
+            state.lastY = y;
+            return;
+        }
+
+        float moved = (float) Math.hypot(x - state.lastX, y - state.lastY);
+        if (moved > dp(context, 1.2f)) {
+            state.lastMoveAt = SystemClock.uptimeMillis();
+            state.cancelTimer();
+        }
+        state.lastX = x;
+        state.lastY = y;
+
+        if (!state.armed) {
+            state.armed = true;
+            state.cancelTimer();
+            Log.d(TAG, "armed inward=" + (int) inward);
+        }
+        if (state.armed && state.timer == null) {
+            scheduleTrigger(owner, state, event, context);
+        }
+    }
+
+    private static void scheduleTrigger(Object owner, State state, MotionEvent event,
+                                        Context context) {
+        state.recycleEvent();
+        state.timerEvent = MotionEvent.obtain(event);
+        final int generation = state.generation;
+        final Context appContext = context;
+        final MotionEvent timerEvent = state.timerEvent;
+        Runnable runnable = () -> {
+            try {
+                if (state.generation != generation || !state.down || !state.armed
+                        || state.triggered || !state.enabled) {
+                    return;
+                }
+                long elapsed = SystemClock.uptimeMillis() - state.lastMoveAt;
+                if (elapsed < state.holdMs - 40L) {
+                    return;
+                }
+                trigger(owner, state, appContext, timerEvent);
+            } catch (Throwable t) {
+                log("trigger failed: " + t);
+            }
+        };
+        state.timer = runnable;
+        state.handler.postDelayed(runnable, Math.max(120L, state.holdMs));
+    }
+
+    private static void trigger(Object owner, State state, Context context,
+                                MotionEvent event) {
+        state.triggered = true;
+        state.armed = false;
+        state.timer = null;
+        SUPPRESSED.add(owner);
+
+        cancelSystemBack(owner, event);
+        hideSideGestureView(owner);
+        haptic(context);
+
+        final int desired = state.isLeft ? 1 : 0;
+        final int current = currentPanelSide(context, state.screenW);
+        final int downY = (int) state.downY;
+        final int screenW = state.screenW;
+        final int screenH = state.screenH;
+        final float velocity = state.velocityX;
+        final long now = SystemClock.uptimeMillis();
+
+        if (desired == current) {
+            setPanelSideRaw(context, desired);
+            Rect anchor = anchorRect(context, state);
+            Log.i(TAG, "trigger x=" + (int) state.downX + " y=" + downY
+                    + " hold=" + state.holdMs + " anchor=" + anchor);
+            markPanelShown(context);
+            PanelBridge.show(context, anchor, velocity);
+            lastPanelShownAt = now;
+            lastPanelSide = desired;
+            log("hold triggered at x=" + (int) state.downX + " y=" + downY
+                    + " hold=" + state.holdMs + "ms");
+            state.recycleEvent();
+            return;
+        }
+
+        if (switching && now < switchingUntil) {
+            Log.d(TAG, "side switch already in progress; trigger ignored");
+            state.recycleEvent();
+            return;
+        }
+        switching = true;
+        switchingUntil = now + 2500L;
+        final int side = desired;
+        final boolean likelyOpen = now - lastPanelShownAt < PANEL_OPEN_WINDOW_MS;
+        Runnable switchAndShow = () -> {
+            try {
+                setPanelSideRaw(context, side);
+                waitForSceneSide(context, state.handler, side, screenW,
+                        SystemClock.uptimeMillis() + SIDE_SWITCH_SCENE_TIMEOUT, () -> {
+                            try {
+                                Rect anchor = sideAnchor(context, side, downY, screenW, screenH);
+                                Log.i(TAG, "trigger after side switch anchor=" + anchor);
+                                markPanelShown(context);
+                                PanelBridge.show(context, anchor, velocity);
+                                lastPanelShownAt = SystemClock.uptimeMillis();
+                                lastPanelSide = side;
+                            } catch (Throwable t) {
+                                log("delayed panel show failed: " + t);
+                            } finally {
+                                switching = false;
+                            }
+                        });
+            } catch (Throwable t) {
+                log("side switch failed: " + t);
+                switching = false;
+            }
+        };
+        Log.i(TAG, "switching panel side " + current + "->" + side + " likelyOpen=" + likelyOpen);
+        if (likelyOpen) {
+            PanelBridge.dismiss(context, sideAnchor(context, current, downY, screenW, screenH));
+            state.handler.postDelayed(switchAndShow, 320L);
+        } else {
+            switchAndShow.run();
+        }
+        state.recycleEvent();
+    }
+
+    private static void cancelSystemBack(Object detector, MotionEvent event) {
+        try {
+            Class<?> type = detector.getClass();
+            Method cancel = CANCEL_METHODS.get(type);
+            if (cancel == null) {
+                cancel = type.getDeclaredMethod("cancelGesture",
+                        MotionEvent.class, Boolean.class, Boolean.class);
+                cancel.setAccessible(true);
+                CANCEL_METHODS.put(type, cancel);
+            }
+            MotionEvent argument = event;
+            if (argument == null) {
+                State state = STATES.get(detector);
+                long now = SystemClock.uptimeMillis();
+                argument = MotionEvent.obtain(
+                        state == null ? now : state.downAt,
+                        now,
+                        MotionEvent.ACTION_MOVE,
+                        state == null ? 0f : state.lastX,
+                        state == null ? 0f : state.lastY,
+                        0);
+            }
+            cancel.invoke(detector, argument, Boolean.FALSE, Boolean.TRUE);
+            if (argument != event) {
+                argument.recycle();
+            }
+        } catch (Throwable t) {
+            log("cancelGesture failed: " + t);
+        }
+    }
+
+    private static Rect anchorRect(Context context, State state) {
+        Rect scene = sceneRect(context);
+        if (scene != null) {
+            boolean sceneLeft = scene.centerX() < state.screenW / 2f;
+            if (sceneLeft == state.isLeft) {
+                return new Rect(scene);
+            }
+        }
+        int width = Math.max(1, (int) dp(context, 18f));
+        int height = Math.min(state.screenH, (int) dp(context, 300f));
+        int top = (int) state.downY - height / 2;
+        top = Math.max(0, Math.min(state.screenH - height, top));
+        int left = state.isLeft ? 0 : state.screenW - width;
+        return new Rect(left, top, left + width, top + height);
+    }
+
+    private static void markPanelShown(Context context) {
+        try {
+            Settings.Secure.putLong(context.getContentResolver(), LAST_SHOW_KEY,
+                    SystemClock.uptimeMillis());
+        } catch (Throwable t) {
+            log("mark panel shown failed: " + t);
+        }
+    }
+
+    private static void applyBarHidden(Context context, Config config) {
+        try {
+            int alpha = config.hideBar ? 0 : 40;
+            Settings.Secure.putInt(context.getContentResolver(), FLOAT_BAR_ALPHA_KEY, alpha);
+        } catch (Throwable t) {
+            log("set float bar alpha failed: " + t);
+        }
+    }
+
+    private static void setPanelSideRaw(Context context, int side) {
+        try {
+            Settings.Secure.putInt(context.getContentResolver(), FLOAT_BAR_SIDE_KEY, side);
+            invalidateSceneCache();
+            Log.i(TAG, "panel side set to " + (side == 1 ? "left" : "right"));
+        } catch (Throwable t) {
+            log("set panel side failed: " + t);
+        }
+    }
+
+    private static int currentPanelSide(Context context, int screenW) {
+        try {
+            int side = Settings.Secure.getInt(
+                    context.getContentResolver(), FLOAT_BAR_SIDE_KEY, -1);
+            if (side == 0 || side == 1) {
+                return side;
+            }
+        } catch (Throwable ignored) {
+        }
+        Rect scene = sceneRect(context);
+        if (scene != null) {
+            return scene.centerX() < screenW / 2f ? 1 : 0;
+        }
+        return 0;
+    }
+
+    private static Rect sideAnchor(Context context, int side, int downY,
+                                   int screenW, int screenH) {
+        Rect scene = sceneRect(context);
+        if (scene != null && (scene.centerX() < screenW / 2f ? 1 : 0) == side) {
+            return new Rect(scene);
+        }
+        int width = Math.max(1, (int) dp(context, 18f));
+        int height = Math.min(screenH, (int) dp(context, 300f));
+        int top = downY - height / 2;
+        top = Math.max(0, Math.min(screenH - height, top));
+        int left = side == 1 ? 0 : screenW - width;
+        return new Rect(left, top, left + width, top + height);
+    }
+
+    private static void waitForSceneSide(Context context, Handler handler, int side,
+                                         int screenW, long deadline, Runnable ready) {
+        invalidateSceneCache();
+        Rect scene = sceneRect(context);
+        boolean matched = scene != null
+                && (scene.centerX() < screenW / 2f ? 1 : 0) == side;
+        if (matched || SystemClock.uptimeMillis() >= deadline) {
+            ready.run();
+            return;
+        }
+        handler.postDelayed(() -> waitForSceneSide(
+                context, handler, side, screenW, deadline, ready), 60L);
+    }
+
+    private static void invalidateSceneCache() {
+        cachedSceneAt = 0L;
+        cachedSceneRect = null;
+    }
+
+    private static void hideSideGestureView(Object detector) {
+        try {
+            Object manager = XposedHelpers.getObjectField(detector, "mSideGestureViewManager");
+            if (manager == null) {
+                return;
+            }
+            XposedHelpers.callMethod(manager, "onUpEvent", 0);
+            XposedHelpers.callMethod(manager, "onUpEvent", 1);
+            Log.d(TAG, "side gesture views dismissed");
+        } catch (Throwable t) {
+            log("hide side gesture view failed: " + t);
+        }
+    }
+
+    private static void haptic(Context context) {
+        try {
+            Vibrator vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            if (vibrator != null && vibrator.hasVibrator()) {
+                vibrator.vibrate(VibrationEffect.createOneShot(10L, 80));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static Config config(Context context) {
+        long now = SystemClock.uptimeMillis();
+        if (now - cachedConfigAt < CONFIG_TTL_MS) {
+            return cachedConfig;
+        }
+        Config config = new Config();
+        Cursor cursor = null;
+        try {
+            cursor = context.getContentResolver().query(CONFIG_URI,
+                    new String[]{"hold_ms", "left", "right", "hide_bar"}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int hold = cursor.getInt(0);
+                config.holdMs = Math.max(Prefs.MIN_HOLD, Math.min(Prefs.MAX_HOLD, hold));
+                config.left = cursor.getInt(1) != 0;
+                config.right = cursor.getInt(2) != 0;
+                if (cursor.getColumnCount() > 3) {
+                    config.hideBar = cursor.getInt(3) != 0;
+                }
+            }
+        } catch (Throwable t) {
+            log("config query failed: " + t);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        cachedConfig = config;
+        cachedConfigAt = now;
+        return config;
+    }
+
+    private static Rect sceneRect(Context context) {
+        long now = SystemClock.uptimeMillis();
+        if (now - cachedSceneAt < SCENE_TTL_MS) {
+            return cachedSceneRect;
+        }
+        Rect rect = null;
+        try {
+            String value = Settings.Secure.getString(
+                    context.getContentResolver(), SCENE_REGION_KEY);
+            if (value != null) {
+                String[] parts = value.trim().split("\\s+");
+                if (parts.length == 4) {
+                    int left = Integer.parseInt(parts[0]);
+                    int top = Integer.parseInt(parts[1]);
+                    int right = Integer.parseInt(parts[2]);
+                    int bottom = Integer.parseInt(parts[3]);
+                    if (right > left && bottom > top) {
+                        rect = new Rect(left, top, right, bottom);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        cachedSceneRect = rect;
+        cachedSceneAt = now;
+        return rect;
+    }
+
+    private static Point displaySize(Object owner, Context context) {
+        try {
+            Object value = XposedHelpers.getObjectField(owner, "mDisplaySize");
+            if (value instanceof Point) {
+                Point point = (Point) value;
+                if (point.x > 0 && point.y > 0) {
+                    return point;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return new Point(
+                context.getResources().getDisplayMetrics().widthPixels,
+                context.getResources().getDisplayMetrics().heightPixels);
+    }
+
+    private static Handler handlerOf(Object owner) {
+        try {
+            Object value = XposedHelpers.getObjectField(owner, "mGestureUIHandler");
+            if (value instanceof Handler) {
+                return (Handler) value;
+            }
+        } catch (Throwable ignored) {
+        }
+        return new Handler(Looper.getMainLooper());
+    }
+
+    private static Context contextOf(Object owner) {
+        try {
+            Object value = XposedHelpers.getObjectField(owner, "mContext");
+            if (value instanceof Context) {
+                return (Context) value;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static float dp(Context context, float value) {
+        return value * context.getResources().getDisplayMetrics().density;
+    }
+
+    private static void log(String message) {
+        XposedBridge.log(TAG + ": " + message);
+    }
+
+    private static final class Config {
+        long holdMs = 200L;
+        boolean left = true;
+        boolean right = true;
+        boolean hideBar = true;
+    }
+
+    private static final class State {
+        boolean down;
+        boolean armed;
+        boolean triggered;
+        boolean enabled;
+        boolean hideBar;
+        boolean isLeft;
+        int generation;
+        int screenW;
+        int screenH;
+        long holdMs = 200L;
+        long downAt;
+        long lastMoveAt;
+        float downX;
+        float downY;
+        float lastX;
+        float lastY;
+        float velocityX;
+        Handler handler = new Handler(Looper.getMainLooper());
+        Runnable timer;
+        MotionEvent timerEvent;
+
+        void finishGesture() {
+            down = false;
+            armed = false;
+            cancelTimer();
+            recycleEvent();
+        }
+
+        void cancelTimer() {
+            if (timer != null && handler != null) {
+                handler.removeCallbacks(timer);
+            }
+            timer = null;
+        }
+
+        void recycleEvent() {
+            MotionEvent event = timerEvent;
+            timerEvent = null;
+            if (event != null) {
+                event.recycle();
+            }
+        }
+    }
+}

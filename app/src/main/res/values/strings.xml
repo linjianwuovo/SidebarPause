@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">侧滑停顿</string>
+    <string name="xposed_description">给 OPPO 智能侧边栏加上小米式触发：边缘内滑后停住呼出，快滑仍是返回。</string>
+
+    <string name="ui_title">侧滑停顿</string>
+    <string name="ui_subtitle">OPPO 智能侧边栏 · 小米式触发</string>
+
+    <string name="hold_title">停顿时长</string>
+    <string name="hold_desc">边缘内滑后停住这么久就呼出侧边栏。快滑不受影响。</string>
+    <string name="hold_value">%1$d ms</string>
+
+    <string name="edge_title">触发边缘</string>
+    <string name="edge_desc">两边可以都开。落在 OPPO 浮标上的手势仍由侧边栏自己处理。</string>
+    <string name="edge_left">左侧</string>
+    <string name="edge_right">右侧</string>
+    <string name="hide_bar">隐藏全局侧边栏（浮标）</string>
+
+    <string name="setup_title">启用</string>
+    <string name="setup_scope">作用域：系统界面（com.android.systemui）</string>
+    <string name="setup_step1">1. 在 LSPosed 中启用本模块，作用域勾选「系统界面」。</string>
+    <string name="setup_step2">2. 启用后点下面的「重启作用域」，或重启手机。</string>
+    <string name="setup_step3">3. 从屏幕边缘内滑，停住即出侧边栏；直接滑走仍是返回。</string>
+    <string name="setup_note">模块只改触发方式，不替换 OPPO 的侧边栏内容。</string>
+
+    <string name="open_lsposed">打开 LSPosed</string>
+    <string name="restart_systemui">重启作用域（root）</string>
+    <string name="restarting">正在重启作用域…</string>
+    <string name="restart_failed">重启失败：确认已授予 root</string>
+    <string name="restart_done">已重启作用域</string>
+    <string name="not_found">没有找到对应页面</string>
+    <string name="hold_changed">已保存</string>
+</resources>
