@@ -70,4 +70,12 @@ gradle assembleRelease
 
 ## 许可
 
-仓库里没放 LICENSE 文件，默认保留所有权利。你可以自己看代码、自己编译、自己用；要转发请带上这个仓库地址。需要别的授权方式可以开 issue 说。
+Apache License 2.0，见 [LICENSE](LICENSE)。
+
+一点说明：`app/libs/api-82.jar` 是 Xposed 框架的编译期桩（stub），只用来让代码能引用
+`de.robv.android.xposed.*` 这些类，是 `compileOnly` 依赖，**不会打进 APK**。构建产物里
+定义的类全是本项目的，Xposed API 的实现由设备上的框架在运行时提供（已核对过 release 包的 dex
+类定义表，里面 1128 个类全是本项目的，没有任何 `de.robv.android.xposed` 类被打包进去）。这个 jar 归 Xposed 上游，
+它自己的条款只对它本身有效；你也可以从上游拿同版本的 api jar 替换掉它再编译。
+
+OPPO 的系统组件（SystemUI、智能侧边栏）不属于本项目，本仓库不含它们的任何源码。
