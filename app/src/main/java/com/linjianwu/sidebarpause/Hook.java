@@ -44,6 +44,8 @@ public final class Hook implements IXposedHookLoadPackage {
     private static final String PANEL_CLOSED_KEY = "sidebarpause_panel_closed_at";
     private static final String SYSTEMUI_LOADED_KEY = "sidebarpause_systemui_loaded";
     private static final String SIDEBAR_LOADED_KEY = "sidebarpause_sidebar_loaded";
+    private static final String HANDLE_VIEW_CLASS =
+            "com.oplus.systemui.navigationbar.gesture.sidegesture.view.SideGestureNavView";
 
     private static final long CONFIG_TTL_MS = 1200L;
     private static final long SCENE_TTL_MS = 1000L;
@@ -146,6 +148,8 @@ public final class Hook implements IXposedHookLoadPackage {
             log("back callback class not found");
         }
 
+        hookSideGestureView(loadPackageParam.classLoader);
+
         XposedHelpers.findAndHookMethod(detector, "cancelGesture",
                 MotionEvent.class, Boolean.class, Boolean.class, new XC_MethodHook() {
                     @Override
@@ -177,6 +181,29 @@ public final class Hook implements IXposedHookLoadPackage {
         }
         State state = STATES.get(owner);
         return state != null && state.down && state.armed && state.enabled && !state.triggered;
+    }
+
+    private static void hookSideGestureView(ClassLoader loader) {
+        Class<?> viewClass = XposedHelpers.findClassIfExists(HANDLE_VIEW_CLASS, loader);
+        if (viewClass == null) {
+            log("SideGestureNavView not found");
+            return;
+        }
+        XposedHelpers.findAndHookMethod(viewClass, "onDraw", Canvas.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            View view = (View) param.thisObject;
+                            if (config(view.getContext()).hideBar) {
+                                param.setResult(null);
+                            }
+                        } catch (Throwable t) {
+                            log("side handle draw hook failed: " + t);
+                        }
+                    }
+                });
+        log("side handle hooks installed");
     }
 
     private static void hookSidebarBar(ClassLoader loader) {
