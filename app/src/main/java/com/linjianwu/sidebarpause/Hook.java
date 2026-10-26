@@ -1,5 +1,8 @@
 package com.linjianwu.sidebarpause;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.database.Cursor;
 import android.graphics.Canvas;
@@ -16,6 +19,7 @@ import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.animation.AccelerateDecelerateInterpolator;
 
 import java.lang.reflect.Method;
 import java.util.Collections;
@@ -70,6 +74,9 @@ public final class Hook implements IXposedHookLoadPackage {
     private static volatile boolean switching;
     private static long switchingUntil;
     private static volatile boolean panelHiddenByUs;
+    private static final long FADE_OUT_MS = 320L;
+    private static volatile View fadingPanel;
+    private static volatile ValueAnimator closedFade;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
@@ -382,48 +389,7 @@ public final class Hook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("closeUserPanel hook failed: " + t);
         }
-        hookPanelDismiss(panel);
         log("panel close hooks installed");
-    }
-
-    /**
-     * 收起前把形变起点换回侧边栏自己算的浮标矩形。showRect 既决定面板从哪长出来，
-     * 也决定它收回成什么形状，不收的话面板会缩成起手那块 72x1200 的灰长条。
-     */
-    private static void hookPanelDismiss(Class<?> panel) {
-        Method target = null;
-        for (Method method : panel.getDeclaredMethods()) {
-            if ("showOrDismissPanelByScale".equals(method.getName())
-                    && method.getParameterTypes().length == 5) {
-                target = method;
-                break;
-            }
-        }
-        if (target == null) {
-            log("showOrDismissPanelByScale not found");
-            return;
-        }
-        final Class<?> panelClass = panel;
-        XposedBridge.hookMethod(target, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) {
-                if (!Boolean.FALSE.equals(param.args[0])) {
-                    return;  // 只在收起时改，打开仍用起手矩形拿到跟手效果
-                }
-                try {
-                    View view = (View) param.thisObject;
-                    if (!hideFloatBar(view)) {
-                        return;
-                    }
-                    Method update = panelClass.getMethod("updateFloatBarRect",
-                            Rect.class, Integer.class, Float.class, Integer.class, Float.class);
-                    update.invoke(view, new Rect(), null, null, null, null);
-                    log("morph source reset before dismiss");
-                } catch (Throwable t) {
-                    log("morph reset on dismiss failed: " + t);
-                }
-            }
-        });
     }
 
     private static String stateName(Object state) {
@@ -468,17 +434,53 @@ public final class Hook implements IXposedHookLoadPackage {
             if (!hideFloatBar(view)) {
                 return;
             }
+            if (fadingPanel == view || panelHiddenByUs) {
+                return;
+            }
             if (view.getVisibility() == View.INVISIBLE && view.getAlpha() == 0f) {
                 return;
             }
             String state = stateName(XposedHelpers.getObjectField(view, "mState"));
-            view.setAlpha(0f);
-            view.setVisibility(View.INVISIBLE);
-            panelHiddenByUs = true;
-            log("closed panel hidden (" + why + ") state=" + state);
+            fadeOutClosedPanel(view, why, state);
         } catch (Throwable t) {
             log("closed panel hide failed (" + why + "): " + t);
         }
+    }
+
+    /**
+     * 面板收回后会停在起手那块矩形上（showRect 就是形变起点）。硬藏会闪，
+     * 所以让它在那儿淡出，收回到哪出现就从哪化掉。
+     */
+    private static void fadeOutClosedPanel(final View view, String why, String state) {
+        final ValueAnimator animator = ValueAnimator.ofFloat(view.getAlpha(), 0f);
+        animator.setDuration(FADE_OUT_MS);
+        animator.setInterpolator(new AccelerateDecelerateInterpolator());
+        animator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                try {
+                    view.setAlpha((Float) animation.getAnimatedValue());
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                fadingPanel = null;
+                closedFade = null;
+                try {
+                    view.setVisibility(View.INVISIBLE);
+                    view.setAlpha(0f);
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+        fadingPanel = view;
+        closedFade = animator;
+        panelHiddenByUs = true;
+        animator.start();
+        log("closed panel fading out (" + why + ") state=" + state);
     }
 
     /** 面板重新打开时，把我们自己藏掉的容器还原，避免打开后面板不可见。 */
@@ -487,6 +489,12 @@ public final class Hook implements IXposedHookLoadPackage {
             return;
         }
         try {
+            ValueAnimator fade = closedFade;
+            if (fade != null) {
+                fade.cancel();
+                closedFade = null;
+                fadingPanel = null;
+            }
             if (view.getVisibility() != View.VISIBLE || view.getAlpha() < 1f) {
                 view.setVisibility(View.VISIBLE);
                 view.setAlpha(1f);
