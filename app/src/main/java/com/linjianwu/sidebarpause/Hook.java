@@ -15,6 +15,7 @@ import android.provider.Settings;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 
 import java.lang.reflect.Method;
 import java.util.Collections;
@@ -41,8 +42,6 @@ public final class Hook implements IXposedHookLoadPackage {
     private static final String FLOAT_BAR_ALPHA_KEY = "edge_panel_os_float_bar_alpha";
     private static final String LAST_SHOW_KEY = "sidebarpause_last_show_at";
     private static final String PANEL_CLOSED_KEY = "sidebarpause_panel_closed_at";
-    private static final String HANDLE_VIEW_CLASS =
-            "com.oplus.systemui.navigationbar.gesture.sidegesture.view.SideGestureNavView";
 
     private static final long CONFIG_TTL_MS = 1200L;
     private static final long SCENE_TTL_MS = 1000L;
@@ -143,8 +142,6 @@ public final class Hook implements IXposedHookLoadPackage {
             log("back callback class not found");
         }
 
-        hookSideGestureView(loadPackageParam.classLoader);
-
         XposedHelpers.findAndHookMethod(detector, "cancelGesture",
                 MotionEvent.class, Boolean.class, Boolean.class, new XC_MethodHook() {
                     @Override
@@ -176,36 +173,6 @@ public final class Hook implements IXposedHookLoadPackage {
         }
         State state = STATES.get(owner);
         return state != null && state.down && state.armed && state.enabled && !state.triggered;
-    }
-
-    private static void hookSideGestureView(ClassLoader loader) {
-        Class<?> viewClass = XposedHelpers.findClassIfExists(HANDLE_VIEW_CLASS, loader);
-        if (viewClass == null) {
-            log("SideGestureNavView not found");
-            return;
-        }
-        XposedHelpers.findAndHookMethod(viewClass, "onDraw", Canvas.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        try {
-                            View view = (View) param.thisObject;
-                            if (suppressSideHandle(view.getContext())) {
-                                param.setResult(null);
-                            }
-                        } catch (Throwable t) {
-                            log("side handle draw hook failed: " + t);
-                        }
-                    }
-                });
-        log("side handle hooks installed");
-    }
-
-    private static boolean suppressSideHandle(Context context) {
-        if (context == null) {
-            return false;
-        }
-        return config(context).hideBar;
     }
 
     private static void hookSidebarBar(ClassLoader loader) {
@@ -296,7 +263,47 @@ public final class Hook implements IXposedHookLoadPackage {
         } else {
             log("FloatBarView not found");
         }
+        hookFloatBarWindow(loader);
         log("float bar hooks installed");
+    }
+
+    private static void hookFloatBarWindow(ClassLoader loader) {
+        Class<?> util = XposedHelpers.findClassIfExists(
+                "com.oplus.smartsidebar.utils.WindowUtil$Companion", loader);
+        if (util == null) {
+            log("WindowUtil not found");
+            return;
+        }
+        try {
+            XposedHelpers.findAndHookMethod(util, "a", View.class, int.class, int.class,
+                    WindowManager.LayoutParams.class, boolean.class, boolean.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                View view = (View) param.args[0];
+                                WindowManager.LayoutParams params =
+                                        (WindowManager.LayoutParams) param.args[3];
+                                String title = params == null
+                                        ? "" : String.valueOf(params.getTitle());
+                                String cls = view == null ? "" : view.getClass().getName();
+                                if (view != null && hideFloatBar(view)
+                                        && (cls.contains("FloatBar") || title.contains("FloatBar"))) {
+                                    if (params != null) {
+                                        params.alpha = 0f;
+                                        params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                                    }
+                                    log("float bar window muted cls=" + cls + " title=" + title);
+                                }
+                            } catch (Throwable t) {
+                                log("float bar window hook failed: " + t);
+                            }
+                        }
+                    });
+            log("float bar window hook installed");
+        } catch (Throwable t) {
+            log("WindowUtil addView hook failed: " + t);
+        }
     }
 
     private static void hookPanelClose(ClassLoader loader) {
