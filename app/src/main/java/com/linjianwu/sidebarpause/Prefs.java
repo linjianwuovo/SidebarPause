@@ -11,8 +11,8 @@ final class Prefs {
     static final String KEY_HIDE = "hide_bar";
 
     static final int MIN_HOLD = 150;
-    static final int MAX_HOLD = 600;
-    static final int DEFAULT_HOLD = 300;
+    static final int MAX_HOLD = 1200;
+    static final int DEFAULT_HOLD = 200;
 
     private Prefs() {
     }
