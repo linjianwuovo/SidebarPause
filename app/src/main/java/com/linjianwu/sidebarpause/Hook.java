@@ -1129,7 +1129,7 @@ public final class Hook implements IXposedHookLoadPackage {
     }
 
     private static final class Config {
-        long holdMs = 200L;
+        long holdMs = 300L;
         boolean left = true;
         boolean right = true;
         boolean hideBar = true;
@@ -1145,7 +1145,7 @@ public final class Hook implements IXposedHookLoadPackage {
         int generation;
         int screenW;
         int screenH;
-        long holdMs = 200L;
+        long holdMs = 300L;
         long downAt;
         long lastMoveAt;
         float downX;

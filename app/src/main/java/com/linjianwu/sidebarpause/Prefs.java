@@ -12,7 +12,7 @@ final class Prefs {
 
     static final int MIN_HOLD = 150;
     static final int MAX_HOLD = 600;
-    static final int DEFAULT_HOLD = 200;
+    static final int DEFAULT_HOLD = 300;
 
     private Prefs() {
     }
